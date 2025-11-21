@@ -1,0 +1,11 @@
+notifiers:
+  - name: "Slack (SCNMS)"
+    type: "slack"
+    uid: "scnms-slack"
+    isDefault: true
+    orgId: 1
+    sendReminder: false
+    settings:
+      url: ${SLACK_WEBHOOK_URL}
+      channel: ""
+      mention: ""

@@ -1,0 +1,33 @@
+groups:
+  - name: scnms.rules
+    interval: 1m
+    rules:
+      - alert: SCNMS_Critical_Alarms
+        expr: sum(scnms_alarms_raised{severity="CRITICAL"}) > 0
+        for: 1m
+        labels:
+          severity: critical
+          team: network-ops
+        annotations:
+          summary: "SCNMS critical alarms present"
+          description: "There are {{ $value }} critical alarms in SCNMS. Investigate immediately."
+
+      - alert: SCNMS_Major_Alarm_Spike
+        expr: increase(scnms_alarms_raised{severity="MAJOR"}[5m]) > 3
+        for: 5m
+        labels:
+          severity: major
+          team: network-ops
+        annotations:
+          summary: "Spike in MAJOR alarms"
+          description: "Major alarms increased by {{ $value }} in the last 5 minutes."
+
+      - alert: Poller_High_Error_Rate
+        expr: increase(poll_errors_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          team: network-ops
+        annotations:
+          summary: "High poller error rate"
+          description: "Poller error count increased by {{ $value }} over the last 5 minutes. Check poller service."

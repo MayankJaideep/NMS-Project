@@ -1,0 +1,320 @@
+version: '3.8'
+
+services:
+  # Database Services
+  postgres:
+    image: postgres:15-alpine
+    container_name: scnms-postgres
+    environment:
+      POSTGRES_DB: scnms
+      POSTGRES_USER: scnms
+      POSTGRES_PASSWORD: scnms
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - scnms-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: scnms-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - scnms-network
+
+  # Monitoring Stack
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: scnms-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./config/prometheus/rules:/etc/prometheus/rules
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - scnms-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: scnms-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards
+    networks:
+      - scnms-network
+
+  # Local OpenNMS for testing
+  opennms:
+    build:
+      context: ./services/opennms_mock
+      dockerfile: Dockerfile
+    container_name: scnms-opennms
+    ports:
+      - "8980:8980"
+    networks:
+      - scnms-network
+
+  # Real OpenNMS (attempt containerized install). This attempts to pull the
+  # official/community image. If the image is unavailable, the startup will
+  # fail and we'll fall back to other options.
+  opennms-real:
+    image: opennms/opennms:latest
+    container_name: scnms-opennms-real
+    ports:
+      - "8980:8980"
+    environment:
+      # OpenNMS will by default try to manage its own DB; we leave defaults for now.
+      - JAVA_OPTS=-Xms512m -Xmx2048m
+    depends_on:
+      - postgres
+    networks:
+      - scnms-network
+
+  opennms-provisioner:
+    build:
+      context: ./services/opennms_provisioner
+      dockerfile: Dockerfile
+    container_name: scnms-opennms-provisioner
+    environment:
+      - OPEN_NMS_URL=http://opennms:8980
+      - DEVICE_DISCOVERY_URL=http://device-discovery:8001
+    depends_on:
+      - opennms
+      - device-discovery
+    networks:
+      - scnms-network
+
+  # SCNMS Microservices
+  device-discovery:
+    build:
+      context: .
+      dockerfile: services/device_discovery/Dockerfile
+    container_name: scnms-device-discovery
+    ports:
+      - "8001:8001"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=scnms
+      - POSTGRES_USER=scnms
+      - POSTGRES_PASSWORD=scnms
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - scnms-network
+
+  poller:
+    build:
+      context: .
+      dockerfile: services/poller/Dockerfile
+    container_name: scnms-poller
+    ports:
+      - "8002:8002"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=scnms
+      - POSTGRES_USER=scnms
+      - POSTGRES_PASSWORD=scnms
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PROMETHEUS_URL=http://prometheus:9090
+      - LOG_LEVEL=INFO
+      - MAX_WORKERS=4
+    depends_on:
+      - postgres
+      - redis
+      - prometheus
+    networks:
+      - scnms-network
+
+  data-ingestion:
+    build:
+      context: .
+      dockerfile: services/data_ingestion/Dockerfile
+    container_name: scnms-data-ingestion
+    ports:
+      - "8003:8003"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=scnms
+      - POSTGRES_USER=scnms
+      - POSTGRES_PASSWORD=scnms
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PROMETHEUS_URL=http://prometheus:9090
+      - LOG_LEVEL=INFO
+    depends_on:
+      - postgres
+      - redis
+      - prometheus
+    networks:
+      - scnms-network
+
+  alarm-manager:
+    build:
+      context: .
+      dockerfile: services/alarm_manager/Dockerfile
+    container_name: scnms-alarm-manager
+    ports:
+      - "8004:8004"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=scnms
+      - POSTGRES_USER=scnms
+      - POSTGRES_PASSWORD=scnms
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - scnms-network
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    container_name: scnms-api
+    ports:
+      - "8000:8000"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=scnms
+      - POSTGRES_USER=scnms
+      - POSTGRES_PASSWORD=scnms
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+    depends_on:
+      - postgres
+      - redis
+      - device-discovery
+      - poller
+      - data-ingestion
+      - alarm-manager
+    networks:
+      - scnms-network
+
+  # Prometheus Exporter
+  prometheus-exporter:
+    build:
+      context: .
+      dockerfile: services/Dockerfile.exporter
+    container_name: scnms-prometheus-exporter
+    ports:
+      - "9100:9100"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=scnms
+      - POSTGRES_USER=scnms
+      - POSTGRES_PASSWORD=scnms
+      - EXPORTER_PORT=9100
+    depends_on:
+      - postgres
+    networks:
+      - scnms-network
+
+  trap-listener:
+    image: python:3.11-slim
+    container_name: scnms-trap-listener
+    working_dir: /app
+    volumes:
+      - ./:/app:cached
+    command: ["sh", "-c", "pip install --no-cache-dir uvicorn fastapi redis structlog pydantic-settings && uvicorn services.trap_listener.main:app --host 0.0.0.0 --port 8008"]
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOG_LEVEL=INFO
+    depends_on:
+      - redis
+    ports:
+      - "8008:8008"
+    networks:
+      - scnms-network
+
+  open-nms-bridge:
+    image: python:3.11-slim
+    container_name: scnms-open-nms-bridge
+    working_dir: /app
+    volumes:
+      - ./:/app:cached
+    command: ["sh", "-c", "pip install --no-cache-dir httpx redis structlog pydantic-settings && python -u -m services.integrations.open_nms"]
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - OPEN_NMS_URL=${OPEN_NMS_URL}
+      - OPEN_NMS_API_KEY=${OPEN_NMS_API_KEY}
+      - LOG_LEVEL=INFO
+    depends_on:
+      - redis
+    networks:
+      - scnms-network
+
+  escalation-worker:
+    image: python:3.11-slim
+    container_name: scnms-escalation-worker
+    working_dir: /app
+    volumes:
+      - ./:/app:cached
+    command: ["sh", "-c", "pip install --no-cache-dir httpx redis structlog pydantic-settings && python -u -m services.escalation.worker"]
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - LOG_LEVEL=INFO
+    depends_on:
+      - redis
+    networks:
+      - scnms-network
+
+  sample-metrics:
+    image: python:3.11-slim
+    container_name: scnms-sample-metrics
+    working_dir: /app
+    volumes:
+      - ./:/app:cached
+    command: ["sh", "-c", "pip install --no-cache-dir prometheus_client && python services/sample_metrics/main.py"]
+    ports:
+      - "8007:8000"
+    networks:
+      - scnms-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  opennms_data:
+
+networks:
+  scnms-network:
+    driver: bridge

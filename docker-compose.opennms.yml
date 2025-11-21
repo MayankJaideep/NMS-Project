@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:14-alpine
+    container_name: opennms-postgres
+    environment:
+      POSTGRES_DB: opennms
+      POSTGRES_USER: opennms
+      POSTGRES_PASSWORD: opennms
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opennms -d opennms"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  opennms:
+    image: opennms/horizon:32.0.0
+    container_name: opennms
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8980:8980"
+      - "8101:8101"
+      - "5007:5007"
+      - "162:162/udp"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=opennms
+      - POSTGRES_USER=opennms
+      - POSTGRES_PASSWORD=opennms
+    volumes:
+      - opennms_data:/opt/opennms
+
+volumes:
+  postgres_data:
+  opennms_data:
